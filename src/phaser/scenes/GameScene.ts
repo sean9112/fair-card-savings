@@ -9,6 +9,8 @@ import {
   WEEKLY_ALLOWANCE,
 } from '../../game/content/economy';
 import { Campaign, type WeekRecord } from '../../game/simulation/systems/Campaign';
+import { EvidenceRecorder } from '../../game/evidence';
+import { askRecording, askReflection } from '../../game/dialogs';
 
 type Screen = 'start' | 'week' | 'recap' | 'final';
 
@@ -32,6 +34,8 @@ export default class GameScene extends Phaser.Scene {
   private screen: Screen = 'start';
   private initialPlan = 50;
   private campaign: Campaign | null = null;
+  private recorder: EvidenceRecorder | null = null;
+  private reflected = false;
 
   constructor() {
     super('GameScene');
@@ -49,6 +53,7 @@ export default class GameScene extends Phaser.Scene {
     this.scale.on('resize', this.renderScreen, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.scale.off('resize', this.renderScreen, this);
+      this.recorder?.close();
     });
     this.renderScreen();
   }
@@ -253,8 +258,14 @@ export default class GameScene extends Phaser.Scene {
     const buttonW = tall ? 488 : 390;
     const buttonX = (this.scale.width - buttonW) / 2;
     this.button(buttonX, buttonY, buttonW, tall ? 72 : 58, '開始六週挑戰', () => {
-      this.campaign = new Campaign(this.initialPlan);
-      this.screen = 'week';
+      void askRecording().then((recording) => {
+        this.recorder?.close();
+        this.recorder = recording ? new EvidenceRecorder() : null;
+        this.reflected = false;
+        this.campaign = new Campaign(this.initialPlan);
+        this.screen = 'week';
+        this.renderScreen();
+      });
     }, { primary: true, size: tall ? 24 : 21 });
     this.centered(
       this.scale.width / 2,
@@ -383,14 +394,21 @@ export default class GameScene extends Phaser.Scene {
     if (tall) {
       this.label(left, 995, '原先計畫每週存 ' + money(campaign.weeklyPlan) + '，可依本週狀況調整。', 16, COLORS.muted);
       this.button(96, 1037, 528, 69, '確認本週安排', () => {
-        if (campaign.settleWeek()) this.screen = 'recap';
+        this.settleWeek(campaign);
       }, { primary: true, size: 23 });
     } else {
       this.label(left, 571, '原先計畫每週存 ' + money(campaign.weeklyPlan) + '；未花的錢會留在錢包。', 17, COLORS.muted);
       this.button(851, 611, 319, 57, '確認本週安排', () => {
-        if (campaign.settleWeek()) this.screen = 'recap';
+        this.settleWeek(campaign);
       }, { primary: true });
     }
+  }
+
+  private settleWeek(campaign: Campaign) {
+    const record = campaign.settleWeek();
+    if (!record) return;
+    this.recorder?.week(record, campaign.weeklyPlan);
+    this.screen = 'recap';
   }
 
   private progressBar(x: number, y: number, width: number, value: number) {
@@ -459,6 +477,7 @@ export default class GameScene extends Phaser.Scene {
       if (record.week < WEEK_COUNT) {
         if (campaign.advanceWeek()) this.screen = 'week';
       } else {
+        this.recorder?.complete(campaign.fund, campaign.gap);
         this.screen = 'final';
       }
     }, { primary: true, size: tall ? 23 : 20 });
@@ -527,7 +546,16 @@ export default class GameScene extends Phaser.Scene {
     });
 
     const reflectionY = y + (tall ? 906 : 604);
-    this.label(left, reflectionY, '想一想：哪一次選擇影響了你的存款？為什麼？', tall ? 18 : 16, COLORS.muted, false, tall ? 600 : 680);
+    this.label(left, reflectionY, this.recorder ? '紀錄是否寫入，請由老師確認試算表。' : '本局未傳送學習紀錄。', tall ? 18 : 16, COLORS.muted, false, tall ? 600 : 460);
+    this.button(tall ? 109 : 609, tall ? y + 936 : y + 588, tall ? 502 : 250, tall ? 60 : 50,
+      this.reflected ? '已完成反思' : '寫下我的反思', () => {
+        void askReflection(!!this.recorder).then((answer) => {
+          if (!answer) return;
+          this.recorder?.reflection(answer);
+          this.reflected = true;
+          this.renderScreen();
+        });
+      }, { disabled: this.reflected, size: tall ? 20 : 18 });
     this.button(
       tall ? 109 : 889,
       tall ? y + 1000 : y + 588,
@@ -535,6 +563,8 @@ export default class GameScene extends Phaser.Scene {
       tall ? 66 : 50,
       '重新挑戰',
       () => {
+        this.recorder?.close();
+        this.recorder = null;
         this.campaign = null;
         this.screen = 'start';
       },
